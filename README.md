@@ -39,7 +39,7 @@ The Multi-Agent AI Governance System is a comprehensive solution designed to aut
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/multi-agent-ai-governance.git
+   git clone (https://github.com/shittuay/-Multi-Agent-AI-Governance-System.git)
    cd multi-agent-ai-governance
    ```
 
