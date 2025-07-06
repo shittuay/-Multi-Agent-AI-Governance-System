@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, FileText, Eye, Brain, Lock, CheckCircle, AlertTriangle, MessageCircle, Send, Filter, Download, Search, Calendar, TrendingUp, TrendingDown, Minus, Activity } from 'lucide-react';
+import { getBedrockResponse, testBedrockConnection, getModelStats } from './bedrock-integration'; // Update path as needed
 
 const GovernanceSystem = () => {
   // State management
@@ -16,6 +17,8 @@ const GovernanceSystem = () => {
   const [chatMessages, setChatMessages] = useState([]);
   const [userInput, setUserInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('checking');
+  const [modelInfo, setModelInfo] = useState(null);
 
   // Agent configurations
   const agentConfigs = {
@@ -23,35 +26,35 @@ const GovernanceSystem = () => {
       name: 'Policy Agent',
       icon: FileText,
       color: 'bg-blue-500',
-      description: 'Manages governance policies and regulatory frameworks',
+      description: 'Manages governance policies and regulatory frameworks using advanced AI analysis',
       capabilities: ['Policy Creation', 'Regulatory Mapping', 'Compliance Standards', 'Framework Updates']
     },
     compliance: {
       name: 'Compliance Agent',
       icon: Shield,
       color: 'bg-green-500',
-      description: 'Monitors adherence to regulations and internal policies',
+      description: 'Monitors adherence to regulations and internal policies with real-time AI insights',
       capabilities: ['Real-time Monitoring', 'Violation Detection', 'Risk Assessment', 'Remediation Suggestions']
     },
     audit: {
       name: 'Audit Agent',
       icon: Eye,
       color: 'bg-purple-500',
-      description: 'Comprehensive logging and audit trail management',
+      description: 'Comprehensive logging and audit trail management with AI-powered forensic analysis',
       capabilities: ['Activity Logging', 'Audit Reports', 'Evidence Collection', 'Forensic Analysis']
     },
     ethics: {
       name: 'Ethics Agent',
       icon: Brain,
       color: 'bg-orange-500',
-      description: 'Evaluates AI decisions for ethical implications and bias',
+      description: 'Evaluates AI decisions for ethical implications and bias using advanced algorithms',
       capabilities: ['Bias Detection', 'Fairness Analysis', 'Ethical Guidelines', 'Impact Assessment']
     },
     privacy: {
       name: 'Data Privacy Agent',
       icon: Lock,
       color: 'bg-red-500',
-      description: 'Ensures data protection and privacy compliance',
+      description: 'Ensures data protection and privacy compliance across multiple jurisdictions',
       capabilities: ['Data Classification', 'Access Control', 'Privacy Impact', 'Consent Management']
     }
   };
@@ -71,38 +74,49 @@ const GovernanceSystem = () => {
     { id: 4, timestamp: new Date(Date.now() - 900000), agent: 'Policy Agent', action: 'Policy Update', result: 'Implemented', risk: 'Low' }
   ];
 
-  // Agent responses
-  const getAgentResponse = (agentKey, message) => {
-    const responses = {
-      policy: [
-        "I've reviewed the current regulatory landscape. GDPR compliance is at 97%, but we need to update our AI fairness standards.",
-        "New policy recommendations: Implement algorithmic impact assessments for high-risk AI systems.",
-        "Regulatory update: EU AI Act requirements now mandate human oversight for AI decision-making systems."
-      ],
-      compliance: [
-        "Current compliance status: 2 policy violations detected in the last hour. Initiating automated remediation.",
-        "Risk assessment complete: High-risk activities detected in data processing pipeline. Escalating to privacy team.",
-        "Compliance monitoring active: All AI systems operating within acceptable risk parameters."
-      ],
-      audit: [
-        "Audit trail complete: 1,247 AI decisions logged in the last 24 hours with full traceability.",
-        "Evidence collection in progress: Gathering data for quarterly compliance report.",
-        "Anomaly detected: Unusual pattern in AI model predictions requires investigation."
-      ],
-      ethics: [
-        "Bias analysis complete: Detected potential gender bias in recruitment AI model. Confidence: 78%.",
-        "Fairness evaluation: AI system shows equitable outcomes across demographic groups.",
-        "Ethical review needed: New AI application may impact vulnerable populations."
-      ],
-      privacy: [
-        "Data protection status: All PII encrypted and access-controlled. No privacy violations detected.",
-        "Consent verification: 12 users requested data deletion under GDPR Article 17.",
-        "Privacy impact assessment: New data collection practice requires user consent updates."
-      ]
-    };
-
-    return responses[agentKey][Math.floor(Math.random() * responses[agentKey].length)];
+  // Enhanced agent response function with Bedrock integration
+  const getAgentResponse = async (agentKey, message, conversationHistory = []) => {
+    try {
+      console.log(`🤖 Getting ${agentKey} agent response from Claude...`);
+      const response = await getBedrockResponse(agentKey, message, conversationHistory);
+      return response;
+    } catch (error) {
+      console.error('Error getting agent response:', error);
+      // Enhanced fallback responses
+      const mockResponses = {
+        policy: `Policy analysis: Reviewing "${message}" against current regulatory frameworks. GDPR compliance at 94.2%, EU AI Act alignment at 87%. Recommend updating governance policies for emerging AI regulations.`,
+        compliance: `Compliance status: Query "${message}" flagged for review. System compliance at 94.2%, detected 2 minor policy deviations. Automated remediation protocols initiated, escalating to governance team.`,
+        audit: `Audit trail: "${message}" logged with full traceability. Evidence collection 87% complete, all decision paths documented with cryptographic verification. Preparing audit report for regulatory submission.`,
+        ethics: `Ethics assessment: "${message}" analyzed for bias and fairness implications. Current fairness metrics within acceptable parameters. Recommend continued demographic impact monitoring across protected classes.`,
+        privacy: `Privacy evaluation: "${message}" processed under GDPR Article 6 and CCPA compliance. Data minimization applied, no privacy violations detected. Multi-jurisdiction compliance verified across UK DPA and CCPA requirements.`
+      };
+      return mockResponses[agentKey] || "I'm experiencing technical difficulties connecting to Claude. Please try again or contact system administrator.";
+    }
   };
+
+  // Test connection on component mount
+  useEffect(() => {
+    const initializeConnection = async () => {
+      try {
+        console.log('🔗 Testing Bedrock connection...');
+        const { success, error } = await testBedrockConnection();
+        setConnectionStatus(success ? 'connected' : 'disconnected');
+        
+        if (success) {
+          const stats = getModelStats();
+          setModelInfo(stats);
+          console.log('✅ Claude connection established:', stats);
+        } else {
+          console.error('❌ Connection failed:', error);
+        }
+      } catch (error) {
+        console.error('❌ Connection test failed:', error);
+        setConnectionStatus('disconnected');
+      }
+    };
+    
+    initializeConnection();
+  }, []);
 
   // Real-time updates
   useEffect(() => {
@@ -124,7 +138,7 @@ const GovernanceSystem = () => {
 
   // Event handlers
   const handleAgentSelect = (agentKey) => {
-    console.log('Agent selected:', agentKey); // Debug log
+    console.log('Agent selected:', agentKey);
     setSelectedAgent(agentKey);
     if (agents[agentKey].alerts > 0) {
       setAgents(prev => ({
@@ -146,20 +160,38 @@ const GovernanceSystem = () => {
     };
 
     setChatMessages(prev => [...prev, userMessage]);
+    const currentInput = userInput.trim();
     setUserInput('');
 
-    // Simulate processing delay
-    await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+    try {
+      // Get agent response from Bedrock with conversation history
+      const agentResponseText = await getAgentResponse(
+        selectedAgent, 
+        currentInput, 
+        chatMessages.slice(-6) // Send last 6 messages for context
+      );
 
-    const agentResponse = {
-      id: Date.now() + 1,
-      type: 'agent',
-      message: getAgentResponse(selectedAgent, userInput),
-      agent: agentConfigs[selectedAgent].name,
-      timestamp: new Date()
-    };
+      const agentResponse = {
+        id: Date.now() + 1,
+        type: 'agent',
+        message: agentResponseText,
+        agent: agentConfigs[selectedAgent].name,
+        timestamp: new Date()
+      };
 
-    setChatMessages(prev => [...prev, agentResponse]);
+      setChatMessages(prev => [...prev, agentResponse]);
+    } catch (error) {
+      console.error('Failed to get agent response:', error);
+      const errorResponse = {
+        id: Date.now() + 1,
+        type: 'agent',
+        message: `I'm experiencing technical difficulties. Error: ${error.message}. Please try again or contact system administrator.`,
+        agent: agentConfigs[selectedAgent].name,
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, errorResponse]);
+    }
+
     setIsProcessing(false);
   };
 
@@ -188,6 +220,24 @@ const GovernanceSystem = () => {
     return Object.values(agents).reduce((total, agent) => total + agent.alerts, 0);
   };
 
+  const getConnectionStatusColor = () => {
+    switch (connectionStatus) {
+      case 'connected': return 'bg-green-400 animate-pulse';
+      case 'disconnected': return 'bg-red-400';
+      case 'checking': return 'bg-yellow-400 animate-pulse';
+      default: return 'bg-gray-400';
+    }
+  };
+
+  const getConnectionStatusText = () => {
+    switch (connectionStatus) {
+      case 'connected': return 'Claude AI Active';
+      case 'disconnected': return 'AI Offline';
+      case 'checking': return 'Connecting...';
+      default: return 'Unknown';
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -203,7 +253,27 @@ const GovernanceSystem = () => {
               </p>
             </div>
             
-            <div className="flex items-center space-x-4">
+            <div className="flex items-center space-x-6">
+              {/* AI Engine Status */}
+              <div className="text-right">
+                <div className="text-sm text-gray-500">AI Engine</div>
+                <div className="flex items-center space-x-2">
+                  <div className={`w-3 h-3 rounded-full ${getConnectionStatusColor()}`}></div>
+                  <span className={`font-medium ${
+                    connectionStatus === 'connected' ? 'text-green-600' : 
+                    connectionStatus === 'disconnected' ? 'text-red-600' : 'text-yellow-600'
+                  }`}>
+                    {getConnectionStatusText()}
+                  </span>
+                </div>
+                {modelInfo && (
+                  <div className="text-xs text-gray-500 mt-1">
+                    {modelInfo.model} • {modelInfo.estimatedCost}
+                  </div>
+                )}
+              </div>
+
+              {/* System Status */}
               <div className="text-right">
                 <div className="text-sm text-gray-500">System Status</div>
                 <div className="flex items-center space-x-2">
@@ -286,6 +356,9 @@ const GovernanceSystem = () => {
             <h2 className="text-2xl font-bold text-gray-900">AI Governance Agents</h2>
             <div className="text-sm text-gray-600 bg-blue-50 px-4 py-2 rounded-lg border">
               Currently Selected: <span className="font-semibold text-blue-600">{agentConfigs[selectedAgent].name}</span>
+              {connectionStatus === 'connected' && (
+                <span className="ml-2 text-green-600">• AI Powered</span>
+              )}
             </div>
           </div>
           
@@ -379,6 +452,9 @@ const GovernanceSystem = () => {
                       </h2>
                       <p className="text-lg text-gray-600">
                         Status: <span className="capitalize font-medium text-green-600">{agents[selectedAgent].status}</span>
+                        {connectionStatus === 'connected' && (
+                          <span className="ml-2 text-blue-600">• Claude AI Enabled</span>
+                        )}
                       </p>
                       <p className="text-sm text-gray-500">
                         Last Update: {agents[selectedAgent].lastUpdate.toLocaleTimeString()}
@@ -426,8 +502,10 @@ const GovernanceSystem = () => {
                     <div className="text-sm text-gray-600">Monitoring</div>
                   </div>
                   <div className="text-center">
-                    <div className="text-2xl font-bold text-purple-600">100%</div>
-                    <div className="text-sm text-gray-600">Uptime</div>
+                    <div className={`text-2xl font-bold ${connectionStatus === 'connected' ? 'text-purple-600' : 'text-gray-400'}`}>
+                      {connectionStatus === 'connected' ? 'AI' : 'OFF'}
+                    </div>
+                    <div className="text-sm text-gray-600">Claude Engine</div>
                   </div>
                 </div>
               </div>
@@ -437,18 +515,39 @@ const GovernanceSystem = () => {
             {showChat && (
               <div className="bg-white rounded-lg shadow-lg">
                 <div className="p-4 border-b border-gray-200">
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    Chat with {agentConfigs[selectedAgent].name}
-                  </h3>
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-lg font-semibold text-gray-900">
+                      Chat with {agentConfigs[selectedAgent].name}
+                    </h3>
+                    <div className={`flex items-center space-x-2 px-3 py-1 rounded-full text-xs ${
+                      connectionStatus === 'connected' 
+                        ? 'bg-green-100 text-green-700' 
+                        : 'bg-red-100 text-red-700'
+                    }`}>
+                      <div className={`w-2 h-2 rounded-full ${
+                        connectionStatus === 'connected' ? 'bg-green-500' : 'bg-red-500'
+                      }`}></div>
+                      {connectionStatus === 'connected' ? 'Claude AI Active' : 'AI Offline'}
+                    </div>
+                  </div>
                 </div>
 
                 <div className="h-96 overflow-y-auto p-4 space-y-4">
                   {chatMessages.length === 0 ? (
                     <div className="text-center py-8">
                       <MessageCircle className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-                      <p className="text-gray-500">
+                      <p className="text-gray-500 mb-2">
                         Start a conversation with the {agentConfigs[selectedAgent].name}
                       </p>
+                      {connectionStatus === 'connected' ? (
+                        <p className="text-green-600 text-sm">
+                          🤖 Powered by Claude 3.5 Sonnet for advanced governance analysis
+                        </p>
+                      ) : (
+                        <p className="text-red-600 text-sm">
+                          ⚠️ AI offline - using fallback responses
+                        </p>
+                      )}
                     </div>
                   ) : (
                     chatMessages.map((msg) => (
@@ -460,7 +559,7 @@ const GovernanceSystem = () => {
                           className={`max-w-xs lg:max-w-md px-4 py-3 rounded-lg ${
                             msg.type === 'user'
                               ? 'bg-blue-500 text-white'
-                              : 'bg-gray-100 text-gray-800'
+                              : 'bg-gray-100 text-gray-800 border border-gray-200'
                           }`}
                         >
                           <p className="text-sm leading-relaxed">{msg.message}</p>
@@ -474,11 +573,16 @@ const GovernanceSystem = () => {
                   
                   {isProcessing && (
                     <div className="flex justify-start">
-                      <div className="bg-gray-100 text-gray-800 px-4 py-3 rounded-lg max-w-xs">
-                        <div className="flex space-x-1">
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
-                          <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                      <div className="bg-gray-100 text-gray-800 px-4 py-3 rounded-lg max-w-xs border border-gray-200">
+                        <div className="flex items-center space-x-2">
+                          <div className="flex space-x-1">
+                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></div>
+                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
+                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                          </div>
+                          <span className="text-xs text-gray-500">
+                            {connectionStatus === 'connected' ? 'Claude is thinking...' : 'Processing...'}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -504,6 +608,11 @@ const GovernanceSystem = () => {
                       <Send className="h-4 w-4" />
                     </button>
                   </div>
+                  {connectionStatus !== 'connected' && (
+                    <p className="text-xs text-red-600 mt-2">
+                      ⚠️ AI connection offline - responses will use fallback mode
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -585,6 +694,14 @@ const GovernanceSystem = () => {
                 <div className="flex justify-between">
                   <span className="text-xs text-gray-600">Risk Level</span>
                   <span className="text-xs font-medium text-yellow-600">Medium</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-xs text-gray-600">AI Engine</span>
+                  <span className={`text-xs font-medium ${
+                    connectionStatus === 'connected' ? 'text-green-600' : 'text-red-600'
+                  }`}>
+                    {connectionStatus === 'connected' ? 'Active' : 'Offline'}
+                  </span>
                 </div>
               </div>
             </div>
