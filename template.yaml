@@ -1,0 +1,671 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Multi-Agent AI Governance System
+  Enterprise-grade AI governance with compliance, policy, audit, ethics, and privacy agents.
+
+# ─── Global Settings ───────────────────────────────────────────────────────────
+Globals:
+  Function:
+    Runtime: nodejs18.x
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        AWS_REGION: !Ref AWS::Region
+        DYNAMODB_TABLE_AUDIT: !Ref AuditLogTable
+        DYNAMODB_TABLE_POLICIES: !Ref PolicyTable
+        DYNAMODB_TABLE_SESSIONS: !Ref RateLimitTable
+        COGNITO_USER_POOL_ID: !Ref UserPool
+        ALLOWED_ORIGINS: !Sub 'https://${CloudFrontDistribution.DomainName}'
+    Layers:
+      - !Ref CommonDependenciesLayer
+    VpcConfig:
+      SecurityGroupIds:
+        - !Ref LambdaSecurityGroup
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+    # Dead letter queue for failed invocations
+    DeadLetterQueue:
+      Type: SQS
+      TargetArn: !GetAtt DeadLetterQueue.Arn
+    ReservedConcurrentExecutions: 50  # Prevent runaway lambda costs
+
+# ─── Parameters ────────────────────────────────────────────────────────────────
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, production]
+    Default: dev
+  KmsKeyArn:
+    Type: String
+    Description: ARN of KMS key for encryption
+  AdminEmail:
+    Type: String
+    Description: Admin email for Cognito user pool
+
+# ─── Resources ─────────────────────────────────────────────────────────────────
+Resources:
+
+  # ── Cognito User Pool ─────────────────────────────────────────────────────────
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub 'governance-user-pool-${Environment}'
+      # Password policy
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 1
+      # MFA - required for all users
+      MfaConfiguration: REQUIRED
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+      # Email verification
+      AutoVerifiedAttributes:
+        - email
+      # Account recovery
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      # Advanced security features (detects compromised credentials)
+      UserPoolAddOns:
+        AdvancedSecurityMode: ENFORCED
+      # Schema for custom attributes
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: role
+          AttributeDataType: String
+          Mutable: true
+        - Name: permissions
+          AttributeDataType: String
+          Mutable: true
+      # Email configuration
+      EmailConfiguration:
+        EmailSendingAccount: DEVELOPER
+      # Token validity
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+        InviteMessageTemplate:
+          EmailMessage: 'Your temporary AI Governance System credentials: {username} / {####}'
+          EmailSubject: 'AI Governance System - Account Invitation'
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub 'governance-app-${Environment}'
+      # No client secret (SPA using PKCE)
+      GenerateSecret: false
+      # Only PKCE flow allowed
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      # Token validity
+      AccessTokenValidity: 1       # 1 hour
+      IdTokenValidity: 1           # 1 hour
+      RefreshTokenValidity: 1      # 1 day
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      # Prevent user existence errors
+      PreventUserExistenceErrors: ENABLED
+      # Allowed callback URLs (populated at deploy time)
+      CallbackURLs:
+        - !Sub 'https://${CloudFrontDistribution.DomainName}/auth/callback'
+      LogoutURLs:
+        - !Sub 'https://${CloudFrontDistribution.DomainName}'
+
+  # ── DynamoDB Tables ───────────────────────────────────────────────────────────
+  AuditLogTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain  # Never delete audit logs
+    Properties:
+      TableName: !Sub 'governance-audit-logs-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      # Encryption at rest using KMS
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref KmsKeyArn
+      # Enable point-in-time recovery
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: userId-timestamp-index
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+            - AttributeName: timestamp
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true  # TTL for automatic expiry (7 years)
+      # Stream for real-time audit events
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: DataClassification
+          Value: Sensitive
+
+  PolicyTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'governance-policies-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref KmsKeyArn
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  RateLimitTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'governance-rate-limits-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # ── Lambda Shared Layer ───────────────────────────────────────────────────────
+  CommonDependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub 'governance-common-${Environment}'
+      Description: Shared middleware and utilities
+      ContentUri: lambda/
+      CompatibleRuntimes:
+        - nodejs18.x
+      RetentionPolicy: Retain
+
+  # ── Lambda Functions ──────────────────────────────────────────────────────────
+  ComplianceAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'governance-compliance-agent-${Environment}'
+      CodeUri: lambda/compliance-agent/
+      Handler: index.handler
+      Description: Compliance monitoring and violation detection
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditLogTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !Ref KmsKeyArn
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /agents/compliance
+            Method: POST
+
+  PolicyAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'governance-policy-agent-${Environment}'
+      CodeUri: lambda/policy-agent/
+      Handler: index.handler
+      Description: Policy management with approval workflow
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PolicyTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditLogTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RateLimitTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !Ref KmsKeyArn
+      Events:
+        ListPolicies:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /policies
+            Method: GET
+        CreatePolicy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /policies
+            Method: POST
+        GetPolicy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /policies/{id}
+            Method: GET
+        UpdatePolicy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /policies/{id}
+            Method: PUT
+        ApprovePolicy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /policies/{id}/approve
+            Method: POST
+        ConflictCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /policies/conflicts
+            Method: POST
+        PolicyChat:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /agents/policy
+            Method: POST
+
+  AuditAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'governance-audit-agent-${Environment}'
+      CodeUri: lambda/audit-agent/
+      Handler: index.handler
+      Description: Audit trail with hash chain integrity
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditLogTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RateLimitTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: !Ref KmsKeyArn
+      Events:
+        GetLogs:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /audit/logs
+            Method: GET
+        CreateLog:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /audit/logs
+            Method: POST
+        VerifyChain:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /audit/verify
+            Method: POST
+        AuditChat:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /agents/audit
+            Method: POST
+
+  EthicsAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'governance-ethics-agent-${Environment}'
+      CodeUri: lambda/ethics-agent/
+      Handler: index.handler
+      Timeout: 60  # Bias detection may take longer
+      Description: Bias detection and fairness analysis
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditLogTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RateLimitTable
+      Events:
+        EthicsChat:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /agents/ethics
+            Method: POST
+
+  PrivacyAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'governance-privacy-agent-${Environment}'
+      CodeUri: lambda/privacy-agent/
+      Handler: index.handler
+      Description: GDPR/CCPA compliance and PII detection
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AuditLogTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RateLimitTable
+      Events:
+        PrivacyChat:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /agents/privacy
+            Method: POST
+
+  # ── API Gateway ───────────────────────────────────────────────────────────────
+  GovernanceApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub 'governance-api-${Environment}'
+      StageName: !Ref Environment
+      # Enable CloudWatch access logs
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","path":"$context.path","status":"$context.status","responseLength":"$context.responseLength","userAgent":"$context.identity.userAgent"}'
+      # Throttling - global limit
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
+          LoggingLevel: ERROR
+          DataTraceEnabled: false  # Disable request/response body logging (contains sensitive data)
+          MetricsEnabled: true
+      # CORS
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Amz-Date,X-Api-Key'"
+        AllowOrigin: !Sub "'https://${CloudFrontDistribution.DomainName}'"
+        MaxAge: "'600'"
+      # WAF association
+      Tags:
+        Environment: !Ref Environment
+
+  # ── CloudWatch Log Groups ─────────────────────────────────────────────────────
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/apigateway/governance-${Environment}'
+      RetentionInDays: 365
+
+  # ── Dead Letter Queue ─────────────────────────────────────────────────────────
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub 'governance-dlq-${Environment}'
+      KmsMasterKeyId: !Ref KmsKeyArn
+      MessageRetentionPeriod: 1209600  # 14 days
+
+  # ── S3 Compliance Reports Bucket ─────────────────────────────────────────────
+  ComplianceReportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'governance-reports-${AWS::AccountId}-${Environment}'
+      # Block all public access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      # Versioning for immutability
+      VersioningConfiguration:
+        Status: Enabled
+      # Encryption
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref KmsKeyArn
+      # Access logging
+      LoggingConfiguration:
+        DestinationBucketName: !Ref S3AccessLogsBucket
+        LogFilePrefix: 'compliance-reports/'
+      # Lifecycle: move to Glacier after 90 days, delete after 7 years
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveRule
+            Status: Enabled
+            Transitions:
+              - TransitionInDays: 90
+                StorageClass: GLACIER
+            ExpirationInDays: 2555  # 7 years
+
+  S3AccessLogsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'governance-access-logs-${AWS::AccountId}-${Environment}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ── CloudFront (Frontend CDN) ─────────────────────────────────────────────────
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2
+        DefaultRootObject: index.html
+        # Security headers policy
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt FrontendBucket.DomainName
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOAI}'
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          ResponseHeadersPolicyId: !Ref SecurityHeadersPolicy
+        # Custom error pages (SPA routing)
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        # WAF
+        WebACLId: !Ref WebAcl
+
+  CloudFrontOAI:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub 'OAI for governance system ${Environment}'
+
+  SecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub 'governance-security-headers-${Environment}'
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          XSSProtection:
+            ModeBlock: true
+            Protection: true
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: strict-origin-when-cross-origin
+            Override: true
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'governance-frontend-${AWS::AccountId}-${Environment}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ── WAF ───────────────────────────────────────────────────────────────────────
+  WebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub 'governance-waf-${Environment}'
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      Rules:
+        # Rate limiting
+        - Name: RateLimitRule
+          Priority: 1
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 1000
+              AggregateKeyType: IP
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: RateLimitRule
+        # AWS managed common rule set
+        - Name: AWSManagedRulesCommonRuleSet
+          Priority: 2
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: CommonRuleSet
+        # SQL injection protection
+        - Name: AWSManagedRulesSQLiRuleSet
+          Priority: 3
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: SQLiRuleSet
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: GovernanceWAF
+
+  # ── VPC (Network Isolation) ───────────────────────────────────────────────────
+  GovernanceVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub 'governance-vpc-${Environment}'
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref GovernanceVpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref GovernanceVpc
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Lambda functions
+      VpcId: !Ref GovernanceVpc
+      # No inbound rules (Lambda is invoked by API Gateway, not directly)
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0  # HTTPS only outbound
+
+# ─── Outputs ───────────────────────────────────────────────────────────────────
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${GovernanceApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}'
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito User Pool Client ID
+    Value: !Ref UserPoolClient
+  CloudFrontDomain:
+    Description: CloudFront distribution domain
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  AuditLogTableName:
+    Description: DynamoDB Audit Log Table
+    Value: !Ref AuditLogTable
+  PolicyTableName:
+    Description: DynamoDB Policy Table
+    Value: !Ref PolicyTable
