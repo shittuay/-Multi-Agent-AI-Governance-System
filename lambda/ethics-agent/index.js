@@ -1,8 +1,7 @@
 /**
- * Ethics Agent Lambda
+ * Ethics Agent Lambda - Bedrock-powered
  *
- * Bias detection and fairness analysis for AI systems.
- * Logs all bias scan results for accountability.
+ * Uses AWS Bedrock to provide intelligent ethics governance analysis.
  */
 
 'use strict';
@@ -10,91 +9,92 @@
 const { requireAuth, getSecurityHeaders } = require('../middleware/auth');
 const { validateRequest, createErrorResponse, sanitizeString } = require('../middleware/validation');
 const { checkRateLimit } = require('../middleware/rateLimit');
+const { callBedrock, extractRiskLevel, extractRecommendations } = require('../middleware/bedrock');
 const { DynamoDBClient, PutItemCommand } = require('@aws-sdk/client-dynamodb');
 
 const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
 const AUDIT_TABLE = process.env.DYNAMODB_TABLE_AUDIT || 'governance-audit-logs';
 
 exports.handler = async (event) => {
-  const headers = getSecurityHeaders(event.headers?.origin);
+  const headers = getSecurityHeaders(event.headers && event.headers.origin);
 
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers, body: '' };
   }
 
-  const authResult = await requireAuth(event, 'ethics:view');
-  if (authResult.statusCode) return { ...authResult, headers };
+  const authResult = await requireAuth(event, 'agent:chat');
+  if (authResult.statusCode) return Object.assign({}, authResult, { headers });
   const { user } = authResult;
 
-  const rateResult = await checkRateLimit(user.id, '/agents/ethics', event.requestContext?.identity?.sourceIp);
-  if (rateResult) return { ...rateResult, headers };
+  const rateLimitResult = await checkRateLimit(
+    user.id, '/agents/ethics',
+    event.requestContext && event.requestContext.identity && event.requestContext.identity.sourceIp
+  );
+  if (rateLimitResult) return Object.assign({}, rateLimitResult, { headers });
 
   const { valid, body, error } = validateRequest(event);
-  if (!valid) return { ...error, headers };
+  if (!valid) return Object.assign({}, error, { headers });
 
-  const query = sanitizeString(body?.content || '').slice(0, 2000);
+  if (!body || !body.content || typeof body.content !== 'string') {
+    return Object.assign({}, createErrorResponse(400, 'Missing or invalid message content'), { headers });
+  }
+
+  const query = sanitizeString(body.content).slice(0, 2000);
+  if (!query) {
+    return Object.assign({}, createErrorResponse(400, 'Message content cannot be empty'), { headers });
+  }
+
+  const conversationHistory = Array.isArray(body.history) ? body.history.slice(-6) : [];
 
   try {
-    const response = await processEthicsQuery(query, user);
-    await writeAuditLog(user.id, 'ethics.bias_scan', 'success', 'Bias scan completed');
+    const bedrockResult = await callBedrock('ethics', query, conversationHistory);
+    const riskLevel = extractRiskLevel(bedrockResult.content);
+    const recommendations = extractRecommendations(bedrockResult.content);
+
+    await logAuditEvent(user.id, 'agent.query', 'success', 'Ethics Agent query processed via Bedrock');
 
     return {
       statusCode: 200,
       headers,
       body: JSON.stringify({
         agentId: 'ethics',
-        content: response.content,
-        risk: response.risk,
-        confidence: response.confidence,
+        content: bedrockResult.content,
+        risk: riskLevel,
+        confidence: bedrockResult.stopReason === 'end_turn' ? 0.90 : 0.75,
+        recommendations: recommendations,
+        model: process.env.BEDROCK_MODEL_ID || 'bedrock-default',
         timestamp: new Date().toISOString(),
       }),
     };
   } catch (err) {
-    await writeAuditLog(user.id, 'ethics.bias_scan', 'failure', 'Ethics agent error');
-    return { ...createErrorResponse(503, 'Ethics agent temporarily unavailable'), headers };
+    await logAuditEvent(user.id, 'agent.query', 'failure', 'Ethics Agent Bedrock error');
+    return Object.assign(
+      {}, createErrorResponse(503, 'Ethics Agent is temporarily unavailable. Please try again.'),
+      { headers }
+    );
   }
 };
 
-async function processEthicsQuery(query, user) {
-  return {
-    content: [
-      'Ethics and bias analysis:',
-      '',
-      '**Bias Score**: 0.12 (low bias detected)',
-      '**Fairness Score**: 96.3% demographic parity',
-      '**Ethical Risk**: Low',
-      '',
-      '**Findings**:',
-      '- Minor representation imbalance (2.3% deviation)',
-      '- Geographic diversity within acceptable parameters',
-      '- No protected class disparate impact detected',
-      '',
-      '**Recommendations**:',
-      '1. Increase diversity in training datasets',
-      '2. Quarterly fairness audits recommended',
-    ].join('\n'),
-    risk: 'low',
-    confidence: 0.91,
-  };
-}
-
-async function writeAuditLog(userId, action, result, details) {
+async function logAuditEvent(userId, action, result, details) {
   try {
+    const now = new Date().toISOString();
+    const id = String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+    const ttl = String(Math.floor(Date.now() / 1000) + 7 * 365 * 24 * 3600);
     await dynamo.send(new PutItemCommand({
       TableName: AUDIT_TABLE,
       Item: {
-        id: { S: `${Date.now()}-${Math.random().toString(36).slice(2)}` },
-        timestamp: { S: new Date().toISOString() },
+        id: { S: id },
+        timestamp: { S: now },
         action: { S: sanitizeString(action) },
         agent: { S: 'Ethics Agent' },
         userId: { S: sanitizeString(userId) },
         result: { S: sanitizeString(result) },
         risk: { S: 'low' },
         details: { S: sanitizeString(details) },
-        ttl: { N: String(Math.floor(Date.now() / 1000) + 7 * 365 * 24 * 3600) },
+        ttl: { N: ttl },
       },
     }));
   } catch (err) {
-    console.error('[EthicsAgent] Audit log error:', err.message);
+    console.error('[AuditLog] Failed to write ethics audit entry:', err.message);
   }
 }

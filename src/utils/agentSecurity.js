@@ -154,6 +154,7 @@ export async function verifyAgentMessage(message) {
  * @returns {Promise<object>} Agent response
  */
 export async function queryAgent(agentId, message, user) {
+  // eslint-disable-next-line security/detect-object-injection
   const config = AGENT_CONFIGS[agentId];
   if (!config) {
     throw new AgentError(`Unknown agent: ${agentId}`, agentId);

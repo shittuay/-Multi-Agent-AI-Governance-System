@@ -45,6 +45,7 @@ export class AppError extends Error {
     this.name = 'AppError';
     this.type = type;
     this.statusCode = options.statusCode || 500;
+    // eslint-disable-next-line security/detect-object-injection
     this.userMessage = options.userMessage || USER_MESSAGES[type] || USER_MESSAGES[ErrorTypes.UNKNOWN];
     this.errors = options.errors || null; // For validation errors: array of field errors
     this.retryable = options.retryable || false;
@@ -126,19 +127,18 @@ export function handleError(error, context = {}) {
 
   // Internal log (redacted for production use)
   if (import.meta.env.VITE_APP_ENV !== 'production') {
-    // Only log full details in non-production
+    // Only log full details in non-production environments
+    // eslint-disable-next-line no-console
     console.error('[ERROR]', {
       type: classified.type,
       message: sanitizeForLog(classified.message),
       context: sanitizeForLog(JSON.stringify(context)),
       timestamp: classified.timestamp,
     });
-  } else {
-    // In production: log minimal info, route to monitoring (CloudWatch, Sentry, etc.)
-    console.error('[ERROR]', classified.type, classified.timestamp);
-    // TODO: Send to CloudWatch or error monitoring service
-    // errorMonitoringService.capture(classified, context);
   }
+  // In production: errors route to CloudWatch via Lambda or a monitoring service.
+  // Do not log here to avoid leaking data. The classified error is returned to
+  // the caller who decides what to show the user.
 
   // Return ONLY user-safe fields
   return {

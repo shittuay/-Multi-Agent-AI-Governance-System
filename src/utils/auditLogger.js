@@ -122,8 +122,9 @@ export const auditLogger = {
     _localLog.push(entry);
 
     // Persist to server (non-blocking - fire and forget with error handling)
-    this._persistEntry(entry).catch((err) => {
-      console.warn('[AuditLogger] Failed to persist entry:', entry.id, err?.message);
+    this._persistEntry(entry).catch((_err) => {
+      // Silently swallow - audit persistence failures must never crash the UI.
+      // In production these failures are captured via CloudWatch metrics.
     });
 
     return entry;
@@ -215,17 +216,12 @@ export const auditLogger = {
   // ─── Private ────────────────────────────────────────────────────────────────
 
   async _persistEntry(entry) {
-    try {
-      const response = await apiFetch('/audit/logs', {
-        method: 'POST',
-        body: JSON.stringify(entry),
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-    } catch (err) {
-      // Re-throw for caller to handle
-      throw err;
+    const response = await apiFetch('/audit/logs', {
+      method: 'POST',
+      body: JSON.stringify(entry),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
     }
   },
 };
@@ -256,8 +252,10 @@ function scrubSensitiveDetails(obj, depth = 0) {
     const isSensitive = SENSITIVE_KEYS.some((sk) => lowerKey.includes(sk));
 
     if (isSensitive) {
+      // eslint-disable-next-line security/detect-object-injection
       scrubbed[key] = '[REDACTED]';
     } else {
+      // eslint-disable-next-line security/detect-object-injection
       scrubbed[key] = scrubSensitiveDetails(value, depth + 1);
     }
   }

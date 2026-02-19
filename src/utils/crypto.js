@@ -123,6 +123,7 @@ export async function verifyAuditChain(entries) {
   let firstTamperedIndex = null;
 
   for (let i = 0; i < entries.length; i++) {
+    // eslint-disable-next-line security/detect-object-injection
     const entry = entries[i];
     const { entryHash, chainHash } = await computeAuditEntryHash(entry, previousHash);
 
@@ -193,6 +194,7 @@ function sortObjectKeys(obj) {
   return Object.keys(obj)
     .sort()
     .reduce((sorted, key) => {
+      // eslint-disable-next-line security/detect-object-injection
       sorted[key] = sortObjectKeys(obj[key]);
       return sorted;
     }, {});

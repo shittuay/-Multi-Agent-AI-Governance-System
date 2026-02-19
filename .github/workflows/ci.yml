@@ -1,0 +1,173 @@
+##############################################################################
+# CI Pipeline – Multi-Agent AI Governance System
+#
+# Runs on every push and pull request to main / develop:
+#   1. Lint (ESLint – zero warnings policy)
+#   2. Test (Vitest – all 262 tests must pass)
+#   3. Build (Vite production build)
+#   4. Security audit (npm audit – no high/critical vulnerabilities)
+#   5. SAST scan (CodeQL JavaScript analysis)
+##############################################################################
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop, 'claude/**']
+  pull_request:
+    branches: [main, develop]
+
+# Prevent concurrent runs on the same branch to avoid race conditions
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write   # Required for CodeQL upload
+  actions: read
+
+env:
+  NODE_VERSION: '20'
+  # Expose only the minimum env needed for the build
+  VITE_APP_ENV: test
+  VITE_MAX_CHAT_MESSAGE_LENGTH: '2000'
+  VITE_MAX_REQUESTS_PER_MINUTE: '60'
+  VITE_ENABLE_REAL_TIME_UPDATES: 'false'
+  VITE_API_BASE_URL: 'http://localhost:3001'
+
+jobs:
+  # ── 1. Lint ──────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ESLint)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint (zero warnings allowed)
+        run: npm run lint
+
+  # ── 2. Test ──────────────────────────────────────────────────────────────────
+  test:
+    name: Test (Vitest)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+  # ── 3. Build ─────────────────────────────────────────────────────────────────
+  build:
+    name: Build (Vite production)
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Production build
+        run: npm run build
+        env:
+          # Only VITE_ prefixed vars reach the browser bundle
+          VITE_APP_ENV: production
+          VITE_MAX_CHAT_MESSAGE_LENGTH: '2000'
+          VITE_MAX_REQUESTS_PER_MINUTE: '60'
+          VITE_ENABLE_REAL_TIME_UPDATES: 'true'
+          # These would be real values in production:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://api.example.com' }}
+          VITE_COGNITO_USER_POOL_ID: ${{ vars.VITE_COGNITO_USER_POOL_ID || 'us-east-1_placeholder' }}
+          VITE_COGNITO_CLIENT_ID: ${{ vars.VITE_COGNITO_CLIENT_ID || 'placeholder' }}
+          VITE_COGNITO_DOMAIN: ${{ vars.VITE_COGNITO_DOMAIN || 'placeholder.auth.us-east-1.amazoncognito.com' }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # ── 4. Security Audit ─────────────────────────────────────────────────────────
+  security-audit:
+    name: Security Audit (npm audit)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit (fail on high/critical)
+        run: npm audit --audit-level=high
+
+  # ── 5. CodeQL SAST ───────────────────────────────────────────────────────────
+  codeql:
+    name: SAST (CodeQL)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript

@@ -1,0 +1,166 @@
+##############################################################################
+# Deploy Pipeline – Multi-Agent AI Governance System
+#
+# Triggered on merge to main (after CI passes):
+#   1. Deploy Lambda agents via AWS SAM
+#   2. Sync React SPA to S3 / invalidate CloudFront
+##############################################################################
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+# Only one deployment runs at a time
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # Required for OIDC → AWS role assumption (no long-lived keys)
+
+env:
+  NODE_VERSION: '20'
+  AWS_REGION: us-east-1
+  SAM_STACK_NAME: multi-agent-ai-governance
+  ENVIRONMENT: production
+
+jobs:
+  # ── Gate: Must pass all CI checks first ──────────────────────────────────────
+  ci-gate:
+    name: CI Gate (lint + test + build)
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  # ── Deploy Lambda Agents via AWS SAM ─────────────────────────────────────────
+  deploy-backend:
+    name: Deploy Backend (SAM)
+    runs-on: ubuntu-latest
+    needs: ci-gate
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC – no stored keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GovernanceDeploySession
+
+      - name: Set up Python (for SAM CLI)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install AWS SAM CLI
+        run: pip install aws-sam-cli
+
+      - name: SAM build
+        run: sam build --template template.yaml
+
+      - name: SAM deploy (no confirmation, fail on changeset empty)
+        run: |
+          sam deploy \
+            --stack-name ${{ env.SAM_STACK_NAME }} \
+            --region ${{ env.AWS_REGION }} \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --parameter-overrides Environment=${{ env.ENVIRONMENT }} \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --s3-bucket ${{ secrets.SAM_ARTIFACTS_BUCKET }}
+
+      - name: Export SAM stack outputs
+        id: sam-outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name ${{ env.SAM_STACK_NAME }} \
+            --query 'Stacks[0].Outputs' \
+            --output json > sam-outputs.json
+          echo "API_URL=$(jq -r '.[] | select(.OutputKey=="ApiUrl") | .OutputValue' sam-outputs.json)" >> "$GITHUB_OUTPUT"
+          echo "CLOUDFRONT_ID=$(jq -r '.[] | select(.OutputKey=="CloudFrontId") | .OutputValue' sam-outputs.json)" >> "$GITHUB_OUTPUT"
+          echo "FRONTEND_BUCKET=$(jq -r '.[] | select(.OutputKey=="FrontendBucketName") | .OutputValue' sam-outputs.json)" >> "$GITHUB_OUTPUT"
+
+    outputs:
+      api-url: ${{ steps.sam-outputs.outputs.API_URL }}
+      cloudfront-id: ${{ steps.sam-outputs.outputs.CLOUDFRONT_ID }}
+      frontend-bucket: ${{ steps.sam-outputs.outputs.FRONTEND_BUCKET }}
+
+  # ── Deploy Frontend SPA to S3 + CloudFront ────────────────────────────────────
+  deploy-frontend:
+    name: Deploy Frontend (S3 + CloudFront)
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production SPA
+        run: npm run build
+        env:
+          VITE_APP_ENV: production
+          VITE_API_BASE_URL: ${{ needs.deploy-backend.outputs.api-url }}
+          VITE_COGNITO_USER_POOL_ID: ${{ secrets.COGNITO_USER_POOL_ID }}
+          VITE_COGNITO_CLIENT_ID: ${{ secrets.COGNITO_CLIENT_ID }}
+          VITE_COGNITO_DOMAIN: ${{ secrets.COGNITO_DOMAIN }}
+          VITE_MAX_CHAT_MESSAGE_LENGTH: '2000'
+          VITE_MAX_REQUESTS_PER_MINUTE: '60'
+          VITE_ENABLE_REAL_TIME_UPDATES: 'true'
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GovernanceFrontendDeploy
+
+      - name: Sync dist/ to S3 (with security headers on HTML)
+        run: |
+          # Upload non-HTML assets with long cache (hashed filenames)
+          aws s3 sync dist/ s3://${{ needs.deploy-backend.outputs.frontend-bucket }}/ \
+            --exclude "*.html" \
+            --cache-control "public,max-age=31536000,immutable" \
+            --delete
+
+          # Upload HTML with no-cache (always fresh)
+          aws s3 sync dist/ s3://${{ needs.deploy-backend.outputs.frontend-bucket }}/ \
+            --exclude "*" \
+            --include "*.html" \
+            --cache-control "no-cache,no-store,must-revalidate" \
+            --content-type "text/html; charset=utf-8"
+
+      - name: Invalidate CloudFront cache (HTML only)
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ needs.deploy-backend.outputs.cloudfront-id }} \
+            --paths "/*.html" "/index.html"
+
+  # ── Smoke test deployed API ────────────────────────────────────────────────────
+  smoke-test:
+    name: Smoke Test (production)
+    runs-on: ubuntu-latest
+    needs: [deploy-backend, deploy-frontend]
+    steps:
+      - name: Health check – /agents/status endpoint
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ needs.deploy-backend.outputs.api-url }}/agents/status")
+          echo "HTTP status: $STATUS"
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "401" ]; then
+            echo "Unexpected status $STATUS from /agents/status"
+            exit 1
+          fi
+          echo "Smoke test passed (status $STATUS – 401 is expected for unauthenticated)"

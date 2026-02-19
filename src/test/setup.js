@@ -7,7 +7,7 @@ afterEach(() => {
 });
 
 // Mock Web Crypto API for Node.js test environment
-Object.defineProperty(global, 'crypto', {
+Object.defineProperty(globalThis, 'crypto', {
   value: {
     randomUUID: () => '00000000-0000-0000-0000-000000000000',
     getRandomValues: (arr) => {

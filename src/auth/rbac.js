@@ -176,6 +176,7 @@ export function assertPermission(user, resource) {
  * Returns the full list of permissions for a role.
  */
 export function getPermissionsForRole(role) {
+  // eslint-disable-next-line security/detect-object-injection
   return PERMISSIONS[role] || [];
 }
 

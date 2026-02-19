@@ -11,7 +11,7 @@
  * - Auth state is cleared on logout everywhere
  */
 
-import { handleError, AppError, ErrorTypes } from '../utils/errorHandler.js';
+import { AppError, ErrorTypes } from '../utils/errorHandler.js';
 import { authRateLimiter } from '../utils/rateLimiter.js';
 
 // ─── Config ───────────────────────────────────────────────────────────────────

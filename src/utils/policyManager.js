@@ -352,9 +352,11 @@ function computeChanges(previous, next) {
   const changes = {};
   const fields = ['name', 'description', 'framework', 'severity', 'rules', 'enabled'];
   for (const field of fields) {
+    /* eslint-disable security/detect-object-injection */
     if (previous[field] !== next[field]) {
       changes[field] = { from: previous[field], to: next[field] };
     }
+    /* eslint-enable security/detect-object-injection */
   }
   return changes;
 }

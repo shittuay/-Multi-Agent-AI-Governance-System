@@ -47,6 +47,7 @@ export function sanitizeText(input) {
   if (typeof input !== 'string') return '';
   return input
     .replace(/[<>"'`]/g, '')          // Remove HTML special chars
+    // eslint-disable-next-line no-control-regex
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '') // Remove control characters
     .trim()
     .slice(0, 10000); // Hard cap

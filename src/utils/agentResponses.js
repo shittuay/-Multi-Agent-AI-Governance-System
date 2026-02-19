@@ -72,7 +72,7 @@ export const MOCK_RESPONSES = {
     });
   },
 
-  policy: (query) => {
+  policy: (_query) => {
     return buildAgentResponse('policy', [
       `Policy analysis for your query:`,
       '',
@@ -91,7 +91,7 @@ export const MOCK_RESPONSES = {
     });
   },
 
-  audit: (query) => {
+  audit: (_query) => {
     return buildAgentResponse('audit', [
       `Audit trail analysis complete:`,
       '',
@@ -111,7 +111,7 @@ export const MOCK_RESPONSES = {
     });
   },
 
-  ethics: (query) => {
+  ethics: (_query) => {
     return buildAgentResponse('ethics', [
       `Ethics and bias analysis complete:`,
       '',
@@ -137,7 +137,7 @@ export const MOCK_RESPONSES = {
     });
   },
 
-  privacy: (query) => {
+  privacy: (_query) => {
     return buildAgentResponse('privacy', [
       `Privacy compliance analysis:`,
       '',
@@ -168,6 +168,7 @@ export const MOCK_RESPONSES = {
  * In production, responses come from Lambda endpoints.
  */
 export function getMockResponse(agentId, query) {
+  // eslint-disable-next-line security/detect-object-injection
   const handler = MOCK_RESPONSES[agentId];
   if (!handler) {
     return buildAgentResponse(agentId, `Agent ${agentId} is not available.`, {

@@ -69,7 +69,7 @@ export function useRealTimeUpdates({ onEvent, enabled = true } = {}) {
 
         // Enforce message size limit
         if (event.data?.length > MAX_MESSAGE_SIZE) {
-          console.warn('[WebSocket] Message exceeded size limit, ignoring');
+          // Silently drop oversized messages - do not log raw data
           return;
         }
 
@@ -77,13 +77,13 @@ export function useRealTimeUpdates({ onEvent, enabled = true } = {}) {
         try {
           parsed = JSON.parse(event.data);
         } catch {
-          console.warn('[WebSocket] Invalid JSON message received, ignoring');
+          // Silently drop malformed JSON - prevents log spam from malformed messages
           return;
         }
 
         // Validate message structure
         if (!isValidWebSocketEvent(parsed)) {
-          console.warn('[WebSocket] Invalid message structure, ignoring');
+          // Silently drop unexpected event types
           return;
         }
 
@@ -185,8 +185,10 @@ function sanitizeEventData(data) {
   const sanitized = {};
   for (const [key, value] of Object.entries(data)) {
     if (typeof value === 'string') {
+      // eslint-disable-next-line security/detect-object-injection
       sanitized[key] = sanitizeText(value).slice(0, 500);
     } else if (typeof value === 'number' || typeof value === 'boolean') {
+      // eslint-disable-next-line security/detect-object-injection
       sanitized[key] = value;
     }
     // Drop any nested objects or arrays from event data

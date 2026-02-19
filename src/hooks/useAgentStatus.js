@@ -126,13 +126,11 @@ export function useAgentStatus(enabled = true) {
    * Updates a single agent's status locally (optimistic update).
    */
   const updateAgentStatus = useCallback((agentId, updates) => {
-    setAgents((prev) => ({
-      ...prev,
-      [agentId]: {
-        ...prev[agentId],
-        ...updates,
-      },
-    }));
+    setAgents((prev) => {
+      // eslint-disable-next-line security/detect-object-injection
+      const current = prev[agentId];
+      return { ...prev, [agentId]: { ...current, ...updates } };
+    });
   }, []);
 
   return {

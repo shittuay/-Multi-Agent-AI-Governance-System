@@ -11,6 +11,7 @@ const { requireAuth, getSecurityHeaders } = require('../middleware/auth');
 const { validateRequest, createErrorResponse, sanitizeString } = require('../middleware/validation');
 const { checkRateLimit } = require('../middleware/rateLimit');
 const { DynamoDBClient, PutItemCommand, QueryCommand, ScanCommand } = require('@aws-sdk/client-dynamodb');
+const { callBedrock, extractRiskLevel, extractRecommendations } = require('../middleware/bedrock');
 const { createHash } = require('crypto');
 
 const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION || 'us-east-1' });
@@ -198,27 +199,53 @@ async function handleVerifyChain(event, headers) {
 
 async function handleAuditChat(event, headers) {
   const authResult = await requireAuth(event, 'agent:chat');
-  if (authResult.statusCode) return { ...authResult, headers };
+  if (authResult.statusCode) return Object.assign({}, authResult, { headers });
+  const { user } = authResult;
 
-  return {
-    statusCode: 200,
-    headers,
-    body: JSON.stringify({
-      agentId: 'audit',
-      content: [
-        'Audit Agent analysis:',
-        '',
-        '**Events in Last 24h**: 1,247 events logged.',
-        '**Chain Integrity**: Verified - No tampering detected.',
-        '**High-Priority Events**: 3 flagged for review.',
-        '',
-        'Use "Verify Integrity" in the UI to run a full chain verification.',
-      ].join('\n'),
-      risk: 'low',
-      confidence: 0.99,
-      timestamp: new Date().toISOString(),
-    }),
-  };
+  const rateResult = await checkRateLimit(
+    user.id, '/agents/audit',
+    event.requestContext && event.requestContext.identity && event.requestContext.identity.sourceIp
+  );
+  if (rateResult) return Object.assign({}, rateResult, { headers });
+
+  const { valid, body, error } = validateRequest(event);
+  if (!valid) return Object.assign({}, error, { headers });
+
+  if (!body || !body.content || typeof body.content !== 'string') {
+    return Object.assign({}, createErrorResponse(400, 'Missing or invalid message content'), { headers });
+  }
+
+  const query = sanitizeString(body.content).slice(0, 2000);
+  if (!query) {
+    return Object.assign({}, createErrorResponse(400, 'Message content cannot be empty'), { headers });
+  }
+
+  const conversationHistory = Array.isArray(body.history) ? body.history.slice(-6) : [];
+
+  try {
+    const bedrockResult = await callBedrock('audit', query, conversationHistory);
+    const riskLevel = extractRiskLevel(bedrockResult.content);
+    const recommendations = extractRecommendations(bedrockResult.content);
+
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        agentId: 'audit',
+        content: bedrockResult.content,
+        risk: riskLevel,
+        confidence: bedrockResult.stopReason === 'end_turn' ? 0.92 : 0.75,
+        recommendations: recommendations,
+        model: process.env.BEDROCK_MODEL_ID || 'bedrock-default',
+        timestamp: new Date().toISOString(),
+      }),
+    };
+  } catch (err) {
+    return Object.assign(
+      {}, createErrorResponse(503, 'Audit agent is temporarily unavailable. Please try again.'),
+      { headers }
+    );
+  }
 }
 
 function computeEntryHash(entry) {

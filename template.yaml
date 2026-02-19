@@ -18,6 +18,9 @@ Globals:
         DYNAMODB_TABLE_SESSIONS: !Ref RateLimitTable
         COGNITO_USER_POOL_ID: !Ref UserPool
         ALLOWED_ORIGINS: !Sub 'https://${CloudFrontDistribution.DomainName}'
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        BEDROCK_MAX_TOKENS: '1024'
+        BEDROCK_TIMEOUT_MS: '25000'
     Layers:
       - !Ref CommonDependenciesLayer
     VpcConfig:
@@ -44,6 +47,14 @@ Parameters:
   AdminEmail:
     Type: String
     Description: Admin email for Cognito user pool
+  BedrockModelId:
+    Type: String
+    Description: AWS Bedrock model ID for governance agents
+    Default: 'anthropic.claude-3-5-haiku-20241022-v1:0'
+    AllowedValues:
+      - 'anthropic.claude-3-5-haiku-20241022-v1:0'
+      - 'anthropic.claude-3-5-sonnet-20241022-v2:0'
+      - 'anthropic.claude-3-haiku-20240307-v1:0'
 
 # ─── Resources ─────────────────────────────────────────────────────────────────
 Resources:
@@ -246,6 +257,15 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey
               Resource: !Ref KmsKeyArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-haiku*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku*'
       Events:
         ApiEvent:
           Type: Api
@@ -274,6 +294,15 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey
               Resource: !Ref KmsKeyArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-haiku*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku*'
       Events:
         ListPolicies:
           Type: Api
@@ -336,6 +365,15 @@ Resources:
                 - kms:Decrypt
                 - kms:GenerateDataKey
               Resource: !Ref KmsKeyArn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-haiku*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku*'
       Events:
         GetLogs:
           Type: Api
@@ -375,6 +413,15 @@ Resources:
             TableName: !Ref AuditLogTable
         - DynamoDBCrudPolicy:
             TableName: !Ref RateLimitTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-haiku*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku*'
       Events:
         EthicsChat:
           Type: Api
@@ -395,6 +442,15 @@ Resources:
             TableName: !Ref AuditLogTable
         - DynamoDBCrudPolicy:
             TableName: !Ref RateLimitTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+              Resource:
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-haiku*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet*'
+                - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku*'
       Events:
         PrivacyChat:
           Type: Api
@@ -402,6 +458,41 @@ Resources:
             RestApiId: !Ref GovernanceApi
             Path: /agents/privacy
             Method: POST
+
+  StatusAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'governance-status-agent-${Environment}'
+      CodeUri: lambda/status-agent/
+      Handler: index.handler
+      Description: Aggregates real-time health status of all governance agents
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RateLimitTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt ComplianceAgentFunction.Arn
+                - !GetAtt PolicyAgentFunction.Arn
+                - !GetAtt AuditAgentFunction.Arn
+                - !GetAtt EthicsAgentFunction.Arn
+                - !GetAtt PrivacyAgentFunction.Arn
+      Environment:
+        Variables:
+          COMPLIANCE_FUNCTION_NAME: !Ref ComplianceAgentFunction
+          POLICY_FUNCTION_NAME: !Ref PolicyAgentFunction
+          AUDIT_FUNCTION_NAME: !Ref AuditAgentFunction
+          ETHICS_FUNCTION_NAME: !Ref EthicsAgentFunction
+          PRIVACY_FUNCTION_NAME: !Ref PrivacyAgentFunction
+      Events:
+        GetStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref GovernanceApi
+            Path: /agents/status
+            Method: GET
 
   # ── API Gateway ───────────────────────────────────────────────────────────────
   GovernanceApi:
