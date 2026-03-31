@@ -21,6 +21,7 @@ Globals:
         BEDROCK_MODEL_ID: !Ref BedrockModelId
         BEDROCK_MAX_TOKENS: '1024'
         BEDROCK_TIMEOUT_MS: '25000'
+        SNS_ALERT_TOPIC_ARN: !Ref AlertTopic
     Layers:
       - !Ref CommonDependenciesLayer
     VpcConfig:
@@ -303,6 +304,11 @@ Resources:
                 - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-haiku*'
                 - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet*'
                 - !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku*'
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref AlertTopic
       Events:
         ListPolicies:
           Type: Api
@@ -538,6 +544,26 @@ Resources:
       KmsMasterKeyId: !Ref KmsKeyArn
       MessageRetentionPeriod: 1209600  # 14 days
 
+  # ── SNS Alert Topic ───────────────────────────────────────────────────────────
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'governance-alerts-${Environment}'
+      DisplayName: 'AI Governance System - Policy Violations & Alerts'
+      KmsMasterKeyId: !Ref KmsKeyArn
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Purpose
+          Value: PolicyViolationAlerts
+
+  AlertTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref AlertTopic
+      Endpoint: !Ref AdminEmail
+
   # ── S3 Compliance Reports Bucket ─────────────────────────────────────────────
   ComplianceReportsBucket:
     Type: AWS::S3::Bucket
@@ -760,3 +786,6 @@ Outputs:
   PolicyTableName:
     Description: DynamoDB Policy Table
     Value: !Ref PolicyTable
+  AlertTopicArn:
+    Description: SNS Alert Topic ARN for policy violations
+    Value: !Ref AlertTopic
